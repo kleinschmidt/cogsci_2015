@@ -1,0 +1,317 @@
+---
+title: "Supervised and unsupervised learning in phonetic adaptation"
+author: "[Dave F. Kleinschmidt](http://www.davekleinschmidt.com), Rajeev Raizada, & T. Florian Jaeger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Supervised and unsupervised learning in phonetic adaptation
+
+Poster presented at Cog Sci 2015. [(PDF)](http://www.davekleinschmidt.com/cogsci_2015/poster.pdf)
+[(Paper PDF)](https://mindmodeling.org/cogsci2015/papers/0200/paper0200.pdf)
+
+```{r preamble, cache=FALSE, warning=FALSE}
+library(knitr)
+knitr::opts_chunk$set(cache=TRUE,
+                      cache.path='poster_cache/',
+                      autodep=TRUE,
+                      dev=c('png', 'pdf', 'svg'),
+                      fig.retina=2,
+                      warning=FALSE,
+                      message=FALSE)
+
+if (! require('supunsup', quietly=TRUE)) {
+  library(devtools)
+  devtools::install_github('kleinschmidt/phonetic-sup-unsup')
+  require('supunsup')
+}
+
+library(dplyr)
+library(lme4)
+library(ggplot2)
+
+theme_set(theme_bw())
+
+four_colors <-
+  c("#255984",     # blue
+    "#CC8A2E",     # yellow
+    "#CC5B2E",     # red-orange
+    "#208C5E")     # green
+
+four_colors_saturated <-
+  c("#1461A1",
+    "#F99710",
+    "#F95210",
+    "#0BAB66")
+
+
+scale_color_discrete <- function(...) {
+  scale_color_manual(values = four_colors_saturated, ...)
+}
+
+scale_fill_discrete <- function(...) {
+  scale_fill_manual(values = four_colors_saturated, ...)
+}
+
+```
+
+# Introduction
+
+* Speech perception is an ongoing _perceptual category learning_ problem.
+    * Need to _adapt_ to each talker's accent
+    * An accent corresponds to a particular set of perceptual categories.
+* Perceptual category learning comes in two flavors: supervised and unsupervised.
+    * Supervised learning: have information that _labels_ each observation with the correct category.
+    * Unsupervised learning: only have observations themselves, need to induce clusters based on observed statistics and prior expectations.
+
+## Background
+
+* Phonetic adaptation has been observed in both forms
+* Supervised:
+    * Recalibration/perceptual learning [Bertelson et al. 2003, Norris et al., 2003, Kraljic & Samuel, 2005]
+    * Ambiguous /b/-/p/ with visual or lexical information that consistently labels it.
+    * If labeled as a /b/, later classify more of a /b/-/p/ continuum as /b/, and vice-versa
+* Unsupervised:
+    * Distributional learning [Clayards et al., 2008]
+    * Hear /b/-/p/ minimal pair words randomly drawn from bimodal distribution on /b/-/p/ continuum.
+    * Classification of continuum changes to reflect clusters in distribution.
+* Real life adaptation is generally a mix, some labeled data and some not.
+
+
+# Methods
+
+* _Distributional learning_ of VOT/voicing categories.
+    * Hear b/p minimal pair words with VOT pseudorandomly drawn from a bimodal distribution
+    * Distribution implies an optimal category boundary that separates lower and higher VOT cluster.
+    * Learning is measured by listeners' classification of these words as /b/ or /p/ version.
+* Labeled and unlabeled trials
+    * Unlabeled trial: both "beach" and "peach" responses are available.  Interpretation of VOT is potentially ambiguous.
+    * Labeled trial: non-minimal pair /b/ and /p/ responses, like "beach" and "peak".  Interpretation of VOT is unambiguous given rest of the word.
+
+# Results
+
+Load data and pick out the relevant subset
+
+```{r}
+
+# pre-parsed + excluded data from package
+dat <- supunsup::supunsup_clean %>%
+  filter(bvotCond %in% c('0', '10')) %>%
+  mutate(bvotCond = factor(bvotCond))
+
+dat_mod <- dat %>%
+  filter(labeled == 'unlabeled') %>%
+  mutate_for_lmer
+
+```
+
+Fit a regression model
+
+```{r}
+
+mod <- glmer(respP ~ vot_rel.s * trial.s * bvotCond.s * supCond +
+               (trial.s * vot_rel.s | subject),
+             data = dat_mod,
+             family = 'binomial',
+             control = glmerControl(optimizer = 'bobyqa'))
+
+```
+
+Set up prediction plots and category boundaries
+
+```{r}
+
+dat_pred <- make_prediction_data(dat, dat_mod)
+
+dat_summary <- dat %>%
+  mutate(thirds = ntile(trial, 3)) %>%
+  left_join(bin_trials(.), by='thirds') %>%
+  group_by(bvotCond, supCond, labeled, trial_range, vot, subject) %>%
+  summarise(respP = mean(respP)) %>%
+  mutate(type = 'actual')
+
+```
+
+## Unsupervised distributional learning
+
+People learn these distributions:
+
+* Category boundaries get steeper with more exposure
+* Move slightly farther apart for different distributions
+* Classification functions are pretty close to the optimal ones.
+
+```{r unsupervised-class-fcn, fig.width=10, fig.height=3}
+
+format_classification_plots <- function(p) {
+  p +
+    scale_color_discrete('Distribution\nShift') +
+    scale_fill_discrete('Distribution\nShift') +
+    scale_linetype_discrete('Condition') +
+    scale_y_continuous('Proportion /p/ responses') +
+    scale_x_continuous('VOT (ms)', breaks = seq(-20, 80, by=20))
+}
+
+intended_boundaries <- dat %>%
+  group_by(bvotCond) %>%
+  summarise() %>%
+  mutate(vot = as.numeric(as.character(bvotCond)) + 20,
+         respP = 0.5, 
+         supCond = 'unsupervised')    # just to make ggplot happy
+
+dat_pred %>%
+  filter(supCond == 'unsupervised') %>%
+  predict_and_plot(mod, show_se=TRUE) %>%
+  format_classification_plots +
+  geom_point(data=filter(dat_summary, supCond=='unsupervised', labeled=='unlabeled'),
+             aes(y=respP), stat='summary', fun.y=mean)
+
+```
+
+
+
+## Semi-supervised learning
+
+When there are labels, listeners respond according to the labels nearly perfectly:
+
+```{r labeled-trials-exp1, fig.width=2.5, fig.height=3.5}
+
+dat %>%
+  filter(labeled == 'labeled',
+         supCond == 'supervised') %>%
+  group_by(trueCat) %>%
+  summarise(respP = mean(respP)) %>%
+  ggplot(aes(x=trueCat, y=respP)) +
+  geom_bar(stat='identity') +
+  scale_x_discrete('Category of label') + 
+  scale_y_continuous('Proportion /p/ responses')
+
+```
+
+So listeners clearly are picking up on the label.  But labels don't make any difference for _learning_.  Listeners classified unlabeled trials the same way when some trials were labeled (supervised condition, solid line) as when they were all unlabeled (unsupervised condition, dashed line).
+
+```{r supervised-class-fcn, fig.width=10, fig.height=3.5}
+
+dat_summary_ex1 <- dat_summary %>%
+  filter(supCond %in% c('unsupervised', 'supervised'),
+         labeled == 'unlabeled')
+
+dat_pred %>%
+  filter(supCond %in% c('unsupervised', 'supervised')) %>%
+  predict_and_plot(mod, show_se=TRUE) %>%
+  format_classification_plots +
+  geom_point(data=dat_summary_ex1, aes(y=respP), stat='summary', fun.y=mean) +
+  geom_line(data=dat_summary_ex1, aes(y=respP), stat='summary', fun.y=mean) + 
+  geom_point(data=intended_boundaries,
+             aes(y=respP, group=bvotCond), shape = 1, size=3)
+
+
+```
+
+## Semi-supervised learning, 2.0
+
+Again, labels _do_ guide the interpretation of VOT:
+
+```{r labeled-trials-exp2, fig.width=2.5, fig.height=3.5}
+
+dat %>%
+  filter(labeled == 'labeled',
+         supCond == 'mixed') %>%
+  group_by(trueCat) %>%
+  summarise(respP = mean(respP)) %>%
+  ggplot(aes(x=trueCat, y=respP)) +
+  geom_bar(stat='identity') +
+  scale_x_discrete('Category of label') + 
+  scale_y_continuous('Proportion /p/ responses')
+
+```
+
+But don't affect learning as measured on unlabeled trials:
+
+```{r mixed-supervised-class-fcn, fig.width=10, fig.height=3.5}
+
+dat_summary_ex2 <- dat_summary %>%
+  filter(supCond %in% c('unsupervised', 'mixed'),
+         labeled == 'unlabeled')
+
+dat_pred %>%
+  filter(supCond %in% c('unsupervised', 'mixed')) %>%
+  predict_and_plot(mod, show_se=TRUE) %>%
+  format_classification_plots +
+  geom_point(data=dat_summary_ex2, aes(y=respP), stat='summary', fun.y=mean) +
+  geom_line(data=dat_summary_ex2, aes(y=respP), stat='summary', fun.y=mean) + 
+  geom_point(data=intended_boundaries,
+             aes(y=respP, group=bvotCond), shape = 1, size=3)
+
+```
+
+## Summary: Category boundaries
+
+Listeners' category boundaries reflect the distributions they heard.  But they don't substantially differ between unsupervised and semi-supervised learning.
+
+```{r category-boundaries, fig.width=6, fig.height=4}
+
+cat_bounds <- category_boundaries(dat_mod, mod)
+
+ggplot(cat_bounds, aes(x = factor(bvotCond, levels = rev(levels(bvotCond))), 
+                       y = boundary_vot, ymin = boundary_vot - 1.96 * boundary_vot_se, 
+                       ymax = boundary_vot + 1.96 * boundary_vot_se, color = bvotCond, 
+                       shape = factor(supCond, levels = c("unsupervised", 
+                                                             "supervised",
+                                                             "mixed")),
+                       group = paste(shift, supCond))) + 
+  geom_point(size = 7, position = position_dodge(w = 0.75)) + 
+  geom_linerange(size = 1.5, position = position_dodge(w = 0.75)) + 
+  geom_point(aes(y = boundary_vot_true), shape = 1, size = 6) + 
+  scale_color_discrete(drop = FALSE) +
+  scale_shape_discrete('Condition') +
+  scale_x_discrete("Distribution shift (ms VOT)") +
+  scale_color_discrete('Distribution\nShift') +
+  scale_y_continuous("/b/-/p/ boundary (ms VOT)", 
+                     breaks = seq(10, 60, by = 5)) +
+  coord_flip()
+
+
+
+
+```
+
+
+# Conclusion
+
+* Listeners don't use informative labels to speed or improve phonetic adaptation.
+* One interpretation for this: labels simply aren't available to adaptation systems.
+* An alternative: distributions themselves are so informative, labels don't provide much extra information.
+
+# Acknowledgements
+
+Thanks to members of the HLP Lab for feedback on previous versions of this work.  This work was supported by NSF GRFP to DFK and NIH NICHD R01 HD075797 to TFJ.
+
+# References
+
+Bertelson, P., Vroomen, J., & de Gelder, B. (2003). Visual recalibration of auditory speech identification: a McGurk aftereffect. _Psychological Science_, 14(6), 592–597. doi:10.1046/j.0956-7976.2003.psci_1470.x
+
+Clayards, M. A., Tanenhaus, M. K., Aslin, R. N., & Jacobs, R. A. (2008). Perception of speech reflects optimal use of probabilistic speech cues. _Cognition_, 108(3), 804–9. doi:10.1016/j.cognition.2008.04.004
+
+Kraljic, T., & Samuel, A. G. (2005). Perceptual learning for speech: Is there a return to normal? _Cognitive Psychology_, 51(2), 141–78. doi:10.1016/j.cogpsych.2005.05.001
+
+Munson, C. M. (2011). _Perceptual learning in speech reveals pathways of processing_. (Unpublished doctoral dissertation). University of Iowa.
+
+Norris, D., McQueen, J. M., & Cutler, A. (2003). Perceptual learning in speech. _Cognitive Psychology_, 47(2), 204–238. doi:10.1016/S0010-0285(03)00006-9
+
+# Appendix
+
+## Methods
+
+```{r}
+
+n_subj <- dat %>% group_by(subject) %>% summarise() %>% nrow
+n_subj_by_cond <- dat %>%
+  group_by(bvotCond, supCond, subject) %>%
+  summarise() %>%
+  tally()
+
+```
+
+Analyzed data from `r n_subj` subjects recruited on Mechanical Turk.  Each subject was randomly assigned to a supervision condition (unsupervised, supervised, or mixed) and a distribution condition (0ms and 10ms).  There were an average of `r round(mean(n_subj_by_cond$n))` per cell (`r min(n_subj_by_cond$n)` to `r max(n_subj_by_cond$n)`).  Each subject got 222 trials drawn from the appropriate distribution, with three minimal pairs (beach/peach, bees/peas, beak/peak).
+
+Fit a logistic GLMM with fixed effects of trial, VOT, condition (unsupervised, supervised, or mixed), and distribution (0ms or 10ms shift), and the maximal random effects structure (random intercepts and slopes for trial and VOT by subject).  Predictors were appropriately centered and scaled or sum-coded before fitting.  Estimated category boundaries from the fixed effects coefficients, and for visualization computed their standard errors based on the fixed effects variance-covariance matrix (not taking into account random effects).

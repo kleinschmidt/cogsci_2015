@@ -1,0 +1,551 @@
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage{cogsci}
+\usepackage{pslatex}
+\usepackage{apacite}
+\usepackage{siunitx}
+\usepackage{dcolumn}
+
+\usepackage{subcaption}
+
+\usepackage{tipx}
+\newcommand{\ph}[1]{\protect\textipa{/#1/}}
+\newcommand{\aph}[1]{\protect\textipa{[#1]}}
+
+\newcommand{\ms}[1]{\SI{#1}{\milli\second}}
+
+\title{Supervised and unsupervised learning in phonetic adaptation}
+ 
+\author{{\large \bf Dave F. Kleinschmidt$^1$}, {\large \bf Rajeev Raizada$^1$}, and 
+   {\large \bf T. Florian Jaeger$^{1,2,3}$} \\
+   \texttt{\{dkleinschmidt, raizada, fjeager\} $@$ bcs.rochester.edu} \\
+  $^1$Department of Brain and Cognitive Sciences, $^2$Department of Computer Science, and $^3$Department of Linguistics, \\
+  University of Rochester, Rochester, NY, 14607 USA}
+
+
+\begin{document}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% set up R, and load/pre-process data
+%%
+
+<<preamble, echo=FALSE, results='hide', warnings=FALSE, message=FALSE>>=
+library(knitr)
+knitr::opts_chunk$set(cache=TRUE, 
+                      autodep=TRUE,
+                      dev='pdf',
+                      echo=FALSE,
+                      results='hide',
+                      warning=FALSE,
+                      message=FALSE)
+
+library(stargazer)
+library(lme4)
+library(devtools)
+devtools::load_all('../../analysis')
+library(ggplot2)
+theme_set(theme_bw())
+@ 
+
+<<load-data, results='hide'>>=
+dat <- load_and_parse('../../hits/data/supunsup-ALL-visworld.csv') %>%
+  filter(bvotCond %in% c('0', '10')) %>%
+  mutate(bvotCond = factor(bvotCond)) %>%
+  mutate(experiment = ifelse(supCond == c('mixed'),
+                             'Experiment 2',
+                             'Experiment 1'))
+
+assignments <- dat %>% 
+  group_by(subject, assignmentid, bvotCond, supCond, experiment) %>%
+  summarise()
+
+exclude <- exclusions(dat)
+
+## summaries of exclusions, by condition
+exclude_counts <- exclude %>%
+  inner_join(assignments) %>%
+  group_by(experiment) %>%
+  summarise(n_total  = n(),
+            n_repeat = sum(!is.na(rank)),
+            n_bad    = sum(!is.na(exclude80PercentAcc)),
+            n_both   = n_repeat+n_bad-n())
+
+dat_excluded <- inner_join(dat, exclude, by=c('subject', 'assignmentid'))
+dat_clean <- anti_join(dat, exclude, by=c('subject', 'assignmentid'))
+@ 
+
+
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\maketitle
+
+\begin{abstract}
+Speech perception requires ongoing perceptual category learning.  Each talker speaks differently, and listeners need to learn each talker's particular acoustic cue distributions in order to comprehend speech robustly from multiple talkers.  This phonetic adaptation is a \emph{semi-supervised} learning problem, because sometimes a particular cue value occurs with information that \emph{labels} the talker's intended category for the listener, but other times no such labels are available.
+Previous work has shown that adaptation can occur in both purely \emph{supervised} (all labeled) and purely \emph{unsupervised} (all unlabeled) settings, but the interaction between them has not been investigated.  We compare unsupervised with (semi-) supervised phonetic adaptation and find, surprisingly, that adult listeners do \emph{not} take advantage of labeling information to adapt more quickly or effectively, even though the labels affect their categorization.  This suggests that, like language acquisition, phonetic adaptation in adults is dominated by unsupervised, distributional learning.
+\textbf{Keywords:} Cognitive Science, Linguistics, Psychology, Language understanding, Learning, Speech recognition
+\end{abstract}
+
+
+\section{Introduction}\label{introduction}
+
+Everyone speaks differently.  In order to deal with this variability, listeners need to adapt to each new talker they meet, learning how they produce each phonetic category.  For instance, in order to tell whether a talker intended to produce a /b/ or /p/, a listener needs to first learn that talker's /b/ and /p/ distributions of phonetic cues like voice onset time (VOT).  We refer to this distributional learning as \emph{phonetic adaptation}.
+
+Like all perceptual category learning, phonetic adaptation can be \emph{supervised} or \emph{unsupervised}.  In supervised learning, each observed VOT value is labeled with information that tells the listener whether the talker intended to produce /b/ or /p/.  Such labeling information might come from, for instance, the surrounding word (\emph{bash} vs. \emph{$^*$pash}), or from visual cues to articulation.  In unsupervised learning, however, no such labeling information is available.  This is the case during language \emph{acquisition} (e.g., \citeNP{Vallabha2007}) but it can also occur in adult language adaptation when a VOT value occurs in a novel word, or a word that could have either /b/ or /p/, like \emph{beach/peach}.  In general unsupervised learning is harder: in addition to figuring out the \emph{distribution} of VOTs for each category from limited observations, listeners also have to figure out how each of those observations should be categorized.  Each of these depends on the other: how to categorize VOTs depends on the distributions for each category, while the distributions for each category depend on which VOTs are thought to belong to that category.
+
+Both supervised and unsupervised phonetic adaptation have been observed in experiments.  The earliest findings of phonetic adaptation were from supervised paradigms.  For instance, after repeatedly hearing an ambiguous /f/-/s/ sound spliced into words that can only end in /f/ (e.g., \emph{sheriff}), listeners classified more items on an /f/-/s/ continuum as /f/, and vice-versa when the ambiguous /f/-/s/ was spliced into /s/-final words (e.g., \citeNP{Norris2003,Kraljic2005}).  
+
+A small number of recent studies have demonstrated that phonetic adaptation can occur in an \emph{unsupervised} context as well.  Both \citeA{Clayards2008} and \citeA{Munson2011} had listeners listen to /b/-/p/ minimal pair words (e.g., \emph{beach/peach}) with different VOTs, and click on a picture to indicate the word they heard.  Across trials, the VOTs were drawn from a bimodal distribution with a low and a high VOT cluster.  Listeners learned these distributions, as reflected in how they classified the VOT continuum, both the location and slope of their category boundary.
+
+Such unsupervised adaptation requires that listeners combine the cue distributions they actually observe with their prior knowledge about what distributions are typical across talkers \cite{Kleinschmidt2015}.  If a listener hears words with VOTs that cluster around \ms{0} and \ms{40}, they can infer that the mean VOT for /b/ is \ms{0} and for /p/ is \ms{40}, and that their classification should switch from /b/ to /p/ around \ms{20}.  In the absence of labels, each cue value is in principle ambiguous, and listeners need to observe enough different cue values to infer the underlying clusters.  
+%
+% It is not yet know exactly how many such observations are necessary, but both \citeA{Clayards2008} and \citeA{Munson2011} used hundreds of trials to induce unsupervised adaptation, while supervised paradigms typically use only tens of labeled trials \cite{Bertelson2003,Norris2003,Kraljic2005}.
+%
+% Consequently, it is hardly surprising that unsupervised adaptation is much slower than supervised adaptation, requiring hundreds of trials \cite{Clayards2008,Munson2011} instead of tens \cite{Norris2003}.
+
+In actual experience, however, phonetic adaptation is rarely purely unsupervised or supervised, with a mix or labeled and unlabeled observations.  This raises the question: do listeners take advantage of extra information provided by labeled observations in phonetic adaptation?  Work on domain-general \emph{semi-supervised} category learning suggests that learners can leverage labeled trials to make learning from unlabeled trials even more effective \cite{Gibson2013}.  Existing phonetic adaptation paradigms do not directly answer this question, being purely supervised or purely unsupervised.  Moreover, it's possible that what appears to be supervised learning in phonetic adaptation actually reflects a combination of cue-combination and \emph{unsupervised} learning \cite{Kleinschmidt2011,Kleinschmidt2015}.
+In this paper, we investigate the effect of adding some labeled trials to an otherwise unsupervised phonetic adaptation paradigm.  This allows us to compare unsupervised and semi-supervised adaptation in the same paradigm, and thus directly assess the role that labeling information might play in phonetic adaptation.
+
+\section{Experiment 1}\label{experiment-1}
+
+\subsection{Methods}\label{methods}
+
+\subsubsection{Subjects}\label{subjects}
+
+<<expt1-subjects>>=
+excl_1 <- filter(exclude_counts, experiment == 'Experiment 1')
+
+dat_ex1 <- dat_clean %>% 
+  filter(experiment == 'Experiment 1') %>%
+  transform(supCond = factor(supCond, levels=c('supervised', 'unsupervised')))
+
+n_ex1_include <- dat_ex1 %>% group_by(subject) %>% summarise %>% nrow
+n_ex1_total <- n_ex1_include + excl_1$n_total
+@ 
+
+We recruited \Sexpr{n_ex1_total} subjects via Amazon's Mechanical Turk, who were paid $\$2.00$ for participation, which took about 20 minutes. We excluded subjects whose accuracy at \ms{0} and \ms{70} VOT---as extrapolated via a logistic GLM---was less than 80\% correct.  \Sexpr{excl_1[['n_bad']]} subjects were excluded for this reason, leaving \Sexpr{n_ex1_include} for analysis.
+
+\subsubsection{Stimuli}\label{stimuli}
+
+<<stim-dist-function>>=
+
+plot_stim_counts <- function(.data) {
+  .data %>% 
+    filter(bvotCond == 0) %>%
+    group_by(supCond) %>%
+    filter(subject == first(subject)) %>%
+    mutate(labeled = ifelse(supCond!='unsupervised' & trialSupCond!='unsupervised',
+             'labeled',
+             'unlabeled'))  %>%
+    ggplot(aes(x=vot, fill=labeled)) + 
+      geom_histogram(breaks=seq(-25, 65, by=10)) + 
+      scale_x_continuous('VOT (ms)', breaks=seq(-20, 60, by=20)) + 
+      scale_y_continuous('Count') + 
+      scale_fill_manual('Trial type', values=c('#000000', '#888888')) + 
+      facet_grid(supCond~.)
+}
+
+plot_stim_counts_shifted <- function(.data) {
+  .data %>%
+    group_by(bvotCond) %>%
+    filter(subject == first(subject)) %>%
+    group_by(bvotCond, vot) %>%
+    summarise(n=n()) %>%
+    ggplot(aes(x=vot, y=n, fill=bvotCond)) + 
+    ## geom_point(shape=1, size=3) + 
+    geom_bar(stat='identity') + facet_wrap(~bvotCond) + 
+    scale_x_continuous('VOT (ms)', breaks=seq(-20, 80, by=20)) + 
+    scale_fill_discrete('Shift (ms)')
+}
+
+@ 
+
+\begin{figure}[]
+  \centering
+  
+<<stimuli-distributions, fig.width=5, fig.height=3, cache=FALSE>>=
+dat_ex1 %>% plot_stim_counts
+@ 
+  
+  \caption{Stimuli distributions for unshifted condition in Experiment 1. The implied category boundary is at 20ms}
+  \label{fig:expt1-stim-dists}
+\end{figure}
+
+
+Following \citeA{Clayards2008}, subjects heard spoken words, all members of /b/-/p/ minimal pairs (beach/peach, bees/peas, and beak/peak) synthesized with VOTs ranging from \ms{-20} to \ms{90}. The actual VOT values that subjects heard were drawn from a bimodal distribution.  The baseline, unshifted distribution (Figure~\ref{fig:expt1-stim-dists}) had a mean of \ms{0} for /b/ and \ms{40} for /p/ with an implied /b/-/p/ boundary at \ms{20}.  Subjects heard either this unshifted distribution, or a version that was shifted up by \ms{10} VOT, with an implied category boundary at \ms{30} VOT.
+
+\subsubsection{Procedure}\label{procedure}
+
+On each trial, two pictures (target + distractor) were shown, and subjects were instructed to click on the picture that matched a spoken target word (e.g., \emph{beach}). There were two kinds of trials.  On \emph{unlabeled} trials, the distractor picture was the minimal pair neighbor of the target word (e.g., a peach, Figure~\ref{fig:unlabeled-trial}), meaning that listeners had no additional information besides the VOT about whether the word started with a /b/ or a /p/. On \emph{labeled} trials, the onset of the distractor picture's name was a minimal pair neighbor of the target word, but the rest was unrelated (e.g., bees, Figure~\ref{fig:labeled-trial}).  This meant that the end of the word served as a label for the initial segment, and hence labeled the VOT value as either /b/ or /p/.
+
+Subjects were randomly assigned to one of two conditions. In the \emph{unsupervised} condition, all trials were unlabeled. In the \emph{supervised} condition half were labeled and half unlabeled.  In the supervised condition, each possible VOT was either always labeled, or always unlabeled (Figure~\ref{fig:expt1-stim-dists}). Specifically, the modal VOTs for /b/ and /p/ (\ms{0} and \ms{40} in the unshifted condition) were always labeled, the stimulus at $\pm\ms{10}$ VOT from the modal values (\ms{-10}, \ms{10}, \ms{30}, and \ms{50} in the unshifted condition) were always unlabeled, and other stimuli were always labeled (\ms{-20}, \ms{20}, and \ms{60}).
+
+\begin{figure}[]
+  \centering
+  \begin{subfigure}{\columnwidth}
+    \centering
+    \includegraphics[width=0.8\columnwidth]{figure_manual/beach_peach.png}
+    \caption{Unlabeled trial with minimal pair distractor ``peach''.}
+    \label{fig:unlabeled-trial}
+  \end{subfigure}
+  \begin{subfigure}{\columnwidth}
+    \centering
+    \includegraphics[width=0.8\columnwidth]{figure_manual/beach_peas.png}
+    \caption{Labeled trial with non-minimal pair distractor ``peas''.}
+    \label{fig:labeled-trial}
+  \end{subfigure}
+  \caption{Example trial displays for the target word ``beach''}
+  \label{fig:beach-examples}
+\end{figure}
+
+\subsection{Results}\label{results}
+
+<<expt1-results-summary>>=
+
+sup_acc_bysub_ex1 <- dat_ex1 %>%
+  filter(supCond == 'supervised', trialSupCond == 'supervised') %>%
+  group_by(subject) %>%
+  summarise(meanAcc = mean(respCategory == respCat))
+
+mean_sup_acc_ex1 <- mean(sup_acc_bysub_ex1$meanAcc)
+
+@ 
+
+%% \begin{figure}[b]
+%%   \centering
+  
+<<expt1-supervised-plot, fig.width=4, fig.height=2.5, eval=FALSE>>=
+dat_ex1 %>%
+  filter(supCond == 'supervised', trialSupCond == 'supervised') %>%
+  group_by(vot, bvotCond) %>%
+  summarise(respP = mean(respP)) %>%
+  ggplot(aes(x=vot, y=respP, color=bvotCond)) + geom_point() + geom_line() + 
+  scale_x_continuous('VOT (ms)') + 
+  scale_y_continuous('Proportion /p/ responses') + 
+  scale_color_discrete('Shift (ms)')
+@ 
+
+%%   \caption{Data from labeled trials in supervised condition of Experiment 1.  Overall accuracy (responses matching labels) was \Sexpr{round(mean_sup_acc_ex1*100)}\%}
+%%   \label{fig:expt1-sup-results}
+%% \end{figure}
+
+
+<<expt1-regression>>=
+dat_ex1_mod <- dat_ex1 %>%
+  filter(trialSupCond == 'unsupervised') %>% # only analyze unsupervised trials
+  mutate_for_lmer                            # scale and center things
+
+fit <- glmer(respP ~ vot_rel.s * bvotCond.s * supervised * trial.s +
+             (vot_rel.s * trial.s | subject),
+             data=dat_ex1_mod, family='binomial',
+             control= glmerControl(optimizer='bobyqa'))
+@ 
+
+<<expt1-regression-table, results='asis'>>=
+## stargazer(fit)
+@ 
+
+\begin{figure*}[]
+\centering
+
+<<expt1-regression-plot, out.width="\\textwidth", fig.width=8, fig.height=3, cache=FALSE>>=
+trial_thirds <- bin_trials(dat_ex1, 3)
+
+data_ex1_thirds <- dat_ex1 %>%
+  filter(trialSupCond == 'unsupervised') %>%
+  mutate(thirds = ntile(trial, 3)) %>% 
+  select(vot, respP, bvotCond, supCond, thirds) %>%
+  inner_join(trial_thirds) %>%
+  group_by(vot, bvotCond, supCond, trial_range) %>%
+  summarise(respP = mean(respP)) %>%
+  mutate(type = factor('actual', levels=c('actual', 'predicted')))
+
+## for plotting with the actual behavior
+intended_boundaries <- dat_ex1 %>%
+  group_by(bvotCond) %>%
+    summarise() %>%
+      mutate(vot = as.numeric(as.character(bvotCond)) + 20,
+             respP = 0.5, 
+             supCond = 'unsupervised')    # just to make ggplot happy
+  
+dat_ex1_pred <- make_prediction_data(dat_ex1, dat_ex1_mod)
+
+print(predict_and_plot(dat_ex1_pred, fit, show_se=TRUE) + 
+        geom_point(aes(y=respP), data=data_ex1_thirds, size=1) + 
+        geom_line(aes(y=respP), data=data_ex1_thirds) +
+        geom_point(data=intended_boundaries, aes(y=respP, group=bvotCond), 
+                   shape = 1, size=3) + 
+        scale_x_continuous('VOT (ms)', breaks=seq(-20, 70, by=20), limits=c(-10,70)) + 
+        scale_y_continuous('Proportion /p/ response') + 
+        scale_color_discrete('Shift (ms)') + 
+        scale_fill_discrete('Shift (ms)') + 
+        scale_linetype_discrete('Condition'))
+
+@ 
+
+\caption{In Experiment 1, listeners' classification of unlabeled trials (lines) closely matches the implied category boundaries (open circles) for the unshifted (red) and \ms{10} shifted (blue) distributions, but there is no difference between supervised and unsupervised learning (solid vs. dashed lines).  Learning appears as the differences between \ms{0} and \ms{10} shifts (red vs. blue) and increasingly steep category boundaries (left to right).  Top lines are raw average responses, and bottom lines are fitted logistic classification functions and 95\% CIs on fixed effects (see Table~\ref{tab:model-fixed-effects-coefs}).}
+\label{fig:ex1-results}
+\end{figure*}
+
+\subsubsection{People used the labels for classification}\label{people-used-the-labels-for-classification}
+
+On labeled trials in the supervised condition, listeners responded consistently with the label \Sexpr{round(mean_sup_acc_ex1*100)}\% of the time. This means that the response options available did, as we intend, effectively label the percept.
+
+\subsubsection{Learning was good overall} \label{learning-was-good-for-small-shifts-poor-for-large-shifts}
+
+Figure~\ref{fig:ex1-results} (top) shows the aggregate classification functions (averaged over subjects) for each third of the experiment.  To evaluate how well listeners learned the distributions of VOTs they were exposed to, we analyzed the classification responses on unlabeled trials\footnote{In the unsupervised condition, we only analyzed trials that would also have been unlabeled in the supervised condition.} using a mixed-effects logistic regression model. This model included fixed effects for stimulus VOT, supervised vs.~unsupervised condition, distribution shift condition (\ms{0} or \ms{10}), trial, and all interactions thereof. We used the maximal random effects structure for this design, with by-subject random intercepts and slopes for all the within-subject variables (trial, VOT, and their interaction). Table~\ref{tab:model-fixed-effects-coefs} shows the fixed effect coefficient estimates for this model and describes the details of how each variable was coded.
+
+Figure~\ref{fig:ex1-results} (bottom) shows the predictions of these fixed effects (i.e., the fitted classification functions) for each condition at the midpoint of each third of the experiment.  We evaluated learning as the location of the /b/-/p/ category boundary, or where the fitted classification functions crossed the 50\% /p/-response line.  %% Figure~\ref{fig:boundaries-exp1-exp2} (left) shows these category boundaries.
+
+<<boundaries-expt1, cache=FALSE>>=
+boundaries_ex1 <- category_boundaries(dat_ex1_mod, fit) %>% 
+  mutate(experiment='Experiment 1')
+
+bound_diff_ex1 <- boundaries_ex1 %>%
+  group_by(bvotCond) %>% 
+  summarise(err = mean(boundary_vot - boundary_vot_true))
+
+summarise_abs_bound_diff <- function(.data, shifts) {
+  .data %>%
+    filter(bvotCond %in% shifts) %>% 
+    `[[`('err') %>%
+    abs %>%
+    mean
+}
+    
+ex1_bound_err_0_10 <- bound_diff_ex1 %>% summarise_abs_bound_diff(c(0,10))
+
+## boundaries_ex1 %>%
+##   spread(key=supCond, value=boundary_vot) %>%
+##   mutate(sup_unsup_bound_diff = supervised - unsupervised) %>%
+##   summarise(mean_abs_diff = mean(abs(sup_unsup_bound_diff)),
+##             max_abs_diff  = max(abs(sup_unsup_bound_diff)))
+
+@ 
+
+Listeners learned well overall, and their classifications reflected the implied category boundaries of \ms{20} and \ms{30} within \ms{\Sexpr{round(ex1_bound_err_0_10)}}. %% by half way through the final third of the experiment.
+
+\subsubsection{Supervision had no effect on learning}\label{supervision-had-no-effect-on-learning}
+
+Because labels reduce the difficulty of the distributional learning problem, we expected that learning would be faster or better overall in the supervised condition. Contrary to these expectations, learning in the supervised condition was neither faster, nor more complete, than in the unsupervised condition: the estimated category boundaries differ by less than \ms{1} VOT between conditions.
+
+%% \subsection{Discussion}\label{discussion}
+
+\begin{figure}
+  \centering
+  
+<<stimuli-distributions-expt2, fig.width=5, fig.height=2>>=
+
+dat_ex2 %>% plot_stim_counts
+
+@ 
+
+  \caption{Stimuli distributions in Experiment 2, unshifted condition.}
+  \label{fig:stim-dist-expt2}
+\end{figure}
+
+<<expt2-subjects>>=
+excl_2 <- filter(exclude_counts, experiment == 'Experiment 2')
+dat_ex2 <- dat_clean %>% filter(experiment == 'Experiment 2')
+n_ex2_include <- dat_ex2 %>% group_by(subject) %>% summarise %>% nrow
+n_ex2_total <- n_ex2_include + excl_2$n_total
+@ 
+<<expt2-regression>>=
+
+dat_ex2_mod <- dat_clean %>%
+  filter(supCond %in% c('mixed', 'unsupervised')) %>%
+  filter(trialSupCond=='unsupervised' | supCond=='unsupervised') %>%
+  mutate(supCond = factor(supCond, levels=c('mixed', 'unsupervised'))) %>%
+  mutate_for_lmer
+
+fit2 <- glmer(respP ~ vot_rel.s * bvotCond.s * supervised * trial.s +
+                (vot_rel.s * trial.s | subject),
+              data=dat_ex2_mod, family='binomial',
+              control= glmerControl(optimizer='bobyqa'))
+
+@ 
+
+<<expt2-regression-table, results='asis'>>=
+## stargazer(fit2)
+@ 
+
+\begin{figure*}[]
+  \centering
+  
+<<expt2-results-plot, out.width="\\textwidth", fig.height=3, fig.width=8, cache=FALSE>>=
+
+data_ex2_thirds <- dat_ex2_mod %>%
+  mutate(thirds = ntile(trial, 3)) %>% 
+  select(vot, respP, bvotCond, supCond, thirds) %>%
+  inner_join(trial_thirds) %>%
+  group_by(vot, bvotCond, supCond, trial_range) %>%
+  summarise(respP = mean(respP)) %>%
+  mutate(type = factor('actual', levels=c('actual', 'predicted')))
+
+dat_ex2_pred <- make_prediction_data(dat_ex2_mod, dat_ex2_mod)
+
+print(predict_and_plot(dat_ex2_pred, fit2, show_se=TRUE) + 
+        geom_point(aes(y=respP), data=data_ex2_thirds, size=1) + 
+        geom_line(aes(y=respP), data=data_ex2_thirds) +
+        geom_point(data=intended_boundaries, aes(y=respP, group=bvotCond), 
+                   shape = 1, size=3) + 
+        scale_x_continuous('VOT (ms)', breaks=seq(-20, 70, by=20), limits=c(-10,70)) + 
+        scale_y_continuous('Proportion /p/ response') + 
+        scale_color_discrete('Shift (ms)') + 
+        scale_fill_discrete('Shift (ms)') + 
+        scale_linetype_discrete('Condition'))
+
+@ 
+
+  \caption{In Experiment 2, for both distributions listeners' classification (lines) closely matches the category boundary implied by the distributions (open circles), just as in Experiment 1 (compare with Figure~\ref{fig:ex1-results}).  Labels still made no difference (solid vs.~dashed lines), even though labeled trials were distributed more evenly over the VOT continuum than in Experiment 1.}
+  \label{fig:exp2-results}
+\end{figure*}
+
+\section{Experiment 2}\label{experiment-2}
+
+One of the shortcomings of the design of Experiment 1 is that in the supervised condition, listeners never heard exactly the same stimulus with and without a label. This means that the apparent inability or unwillingness of listeners to use the labels for learning might reflect stimulus-specific learning, as might be predicted by an episodic model of speech perception \cite{Goldinger1998,Johnson1997a}. The sparse distribution of \emph{unlabeled} trials may also reduce the statistical power by reducing the resolution with which the classification boundary can be estimated.  Experiment 2 varies the design slightly to determine whether labels affect adaptation when the same stimuli occur as labeled and unlabeled, and when unlabeled test trials occur over a broader range of VOTs.
+
+\subsection{Methods}\label{methods-1}
+
+The design was identical to that of Experiment 1, except for the following modifications. First, we modified the supervised condition, spreading out labeled and unlabeled trials more evenly (see Figure~\ref{fig:stim-dist-expt2}).  Across trials, many VOT values occurred as both labeled and unlabeled trials, unlike in the supervised condition of Experiment 1 where each VOT value only occurred as labeled, or only occurred as unlabeled.  Second, we only ran this modified supervised condition, and compared it to the unsupervised condition of Experiment 1.
+
+\subsubsection{Subjects}\label{subjects-1}
+
+We recruited \Sexpr{n_ex2_total} subjects via Amazon's Mechanical Turk, who were paid \$2.00 for participation, which took about 20 minutes to complete. \Sexpr{excl_2[['n_bad']]} subjects were excluded for failing to reliably classify the continuum, and \Sexpr{excl_2[['n_repeat']]} were excluded from analysis because they had already participated in Experiment 1, leaving \Sexpr{n_ex2_include} subjects for analysis.
+
+\subsection{Results}\label{results-1}
+
+<<expt2-accuracy>>=
+
+sup_acc_bysub_ex2 <- dat_ex2 %>%
+  filter(trialSupCond == 'supervised') %>%
+  group_by(subject) %>%
+  summarise(meanAcc = mean(respCategory == respCat))
+
+mean_sup_acc_ex2 <- mean(sup_acc_bysub_ex2$meanAcc)    
+
+@ 
+
+As in Experiment 1, on labeled trials listeners used the labels to guide their responses, responding consistently with the label \Sexpr{round(mean_sup_acc_ex2*100)}\% of the time.
+
+
+%% \begin{figure}
+%%   \centering
+
+<<category-boundaries, fig.width=5, fig.height=2, eval=FALSE>>=
+boundaries_ex2 <- category_boundaries(dat_ex2_mod, fit2) %>% 
+  mutate(experiment='Experiment 2')
+
+boundaries <- rbind(boundaries_ex1, boundaries_ex2) %>%
+  mutate(true_boundary = 20+as.numeric(as.character(bvotCond)),
+         supervised = ifelse(supCond=='mixed', 
+                             'supervised', 
+                             as.character(supCond)))
+
+ggplot(boundaries, 
+       aes(x=paste(bvotCond, substr(supervised, 0, 2), sep=''), 
+           y=boundary_vot, 
+           ymin=boundary_vot - 1.96*boundary_vot_se,
+           ymax=boundary_vot + 1.96*boundary_vot_se,
+           color=bvotCond, shape=supervised)) + 
+  geom_point() + 
+  geom_errorbar() + 
+  geom_hline(aes(yintercept=boundary_vot_true, color=bvotCond)) + 
+  facet_grid(.~experiment) + 
+  ## scale_x_continuous('Implied boundary (ms VOT)') + 
+  scale_x_discrete('Condition') + 
+  scale_y_continuous('Fitted boundary (ms VOT)', breaks=c(20, 25, 30)) + 
+  scale_color_discrete('Shift (ms VOT)') + 
+  scale_shape_discrete('Condition')
+
+@ 
+  
+%%   \caption{Observed category boundary locations across conditions in Experiment 1 (left) and 2 (right). Horizontal lines show boundaries implied by the VOT distributions.  Boundaries were estimated as the $x$-intercept of the regression fits (Table~\ref{tab:model-fixed-effects-coefs}) at the midpoint of the final third of the experiment (rightmost panels of Figures~\ref{fig:ex1-results} and \ref{fig:exp2-results}).  Error bars are 95\% CIs on the mean.}
+%%   \label{fig:boundaries-exp1-exp2}
+%% \end{figure}
+
+We analyzed learning in the same way as Experiment 1, using the unsupervised condition from Experiment 1 as a baseline. Unlike in the analysis of Experiment 1, we considered all trials from the unsupervised condition, because the labeled trials in the supervised condition of Experiment 2 covered the entire continuum.  Figure~\ref{fig:exp2-results} shows the raw data (top) and the fitted classification functions (bottom) and Table~\ref{tab:model-fixed-effects-coefs} shows the fixed effects estimates.  
+%% Finally, Figure~\ref{fig:boundaries-exp1-exp2} (right) shows the category boundaries, estimated as for Experiment 1.
+
+As in Experiment 1, listeners learned quickly and their category boundaries  were very close to those implied by the distributions of VOTs they heard.  Again, however, learning in the supervised condition (of Experiment 2) was neither faster nor more complete than in the unsupervised condition (of Experiment 1): the category boundaries for supervised and unsupervised were within \ms{2} of each other.
+%% (Figure~\ref{fig:boundaries-exp1-exp2}).  
+
+\subsection{Discussion}\label{discussion-1}
+
+Even when the same stimuli occur with and without labels, the availability of labels appears to make little difference in adapting to a novel talker's /b/ and /p/ categories. This suggests that the failure to find effects of supervision in Experiment 1 was not due to the fact that labeled and unlabeled stimuli were acoustically different.
+
+\section{General Discussion}\label{general-discussion}
+
+In two experiments we directly compared phonetic adaptation with and without supervision.  The presence of information that labels an acoustic stimulus as a /b/ makes the task of learning the distribution of acoustic cues for the /b/ category easier, at least in principle. Normative theories that treat phonetic adaptation as a kind of distributional learning thus predict that, in general, the availability of labels should make adaptation faster, more complete, or both \cite{Kleinschmidt2015}.
+
+Contrary to this prediction, we did not find any effect of supervision on the distributional learning of cue-category mappings in adults. At first glance this contradicts the results of other studies on supervised phonetic adaptation, which suggest that people \emph{do} use labeling information to facilitate learning. For instance, \citeA{Norris2003} found adaptation when listeners heard an ambiguous \ph{s-S} spliced into words that consistently labeled it as either \ph s or \ph S.  However, when \citeA{Norris2003} spliced the same sound in \emph{novel} words that provided no labeling information, listeners did not adapt, suggesting that labeling is crucial for phonetic adaptation.  How can we reconcile these apparently contradictory results?  We briefly discuss four possibilities here: that the \emph{kind} of label matters, that learning was too easy, that self-supervision overwhelms any outside labels in this task, and that our labels were not sufficiently informative.
+
+\subsection{What kind of label?}
+\label{sec:what-kind-label}
+
+One possibility is that the \emph{kind} of label matters. In previous studies on phonetic adaptation where labels are provided, the labels come either from a visual component of the stimulus (e.g., a video of a natural production of /aba/, dubbed over audio of an ambiguous /aba/-/ada/, \citeNP{Bertelson2003}) or from the lexical context (e.g., an ambiguous \ph{s}-\ph{S} spliced into the word \emph{dino\_aur}, \citeNP{Norris2003,Kraljic2005}). In both cases, the label is an intrinsic part of the (audio-visual) speech signal itself. In our design, the label comes from the pragmatic context, the available response choices. It is possible that listeners can use this sort of pragmatic information to guide their responses, but that it is nevertheless not available to whatever systems are responsible for perceptual learning.
+
+A related possibility is that labels that are intrinsic to the signal affect distributional learning in a purely bottom-up way. That is, disambiguating visual information (a natural video of /aba/) might function not at the level of identifying the \emph{category} that the talker intended to produce, but by changing the \emph{cue} that is perceived. Indeed, there is abundant evidence that cues are combined in this way within and across modalities, in speech perception \cite{Bejjanki2011,Toscano2010} and in perception more generally (cf. \citeNP{Ernst2004}). If adaptation is driven by distributional learning of the integrated multimodal percept, rather than the component cues, then what appears to be sensitivity to category labels in previous adaptation studies may instead by bottom-up distributional learning of not-fully-ambiguous multimodal cues \cite{Kleinschmidt2011}.
+
+\subsection{A learning ceiling effect?}
+\label{sec:learn-ceil-effect}
+
+Listeners adapted very well to both the unshifted and \ms{10}-shifted distributions, with their classifications matching the implied category boundaries even in the first third of the experiment.  This suggests that learning these distributions may have been too easy for the labels to make any difference.\footnote{We also investigated larger shifts of \ms{20} and \ms{30}, for which adaptation was incomplete.  Nevertheless, labels made no difference and so for the sake of brevity we do not report the detailed results here.}  It remains a question for future work to see whether a more sensitive paradigm can find an effect of labels by, for instance, using a smaller number of exposure trials to induce adaptation coupled with with a separate pre- and post-test to assess adaptation.
+
+\subsection{Self-supervision}
+\label{sec:self-supervision}
+
+Unlike most studies on domain-general semi-supervised learning, listeners in our studies have a great deal of prior experience with the categories we are teaching them, at least as they are produced by other talkers.  This makes even our unsupervised condition partially supervised: listeners' prior experience provides a \emph{self}-supervision signal, or, in Bayesian terms, a prior \cite{Kleinschmidt2015}.  It thus could be the case that this prior is sufficiently informative to make any additional information provided by the labels themselves redundant.
+% something about how self-supervision is still different?
+
+A related, if more extreme, possibility is that listeners might decide the first time they hear, for instance, a VOT of \ms{10} that it is a \ph b, and never change that belief.  However, the fact that the category boundaries grow \emph{steeper} with more exposure suggests that this is not correct: if listeners committed to a categorization of each individual stimulus early, then their categorization functions should be sharp and constant throughout the experiment.
+
+\subsection{How informative is each label?}
+\label{sec:how-informative-each}
+
+Previous phonetic adaptation studies that used labels applied those labels to trials that were acoustically maximally ambiguous (e.g., \citeNP{Bertelson2003,Kraljic2005,Norris2003}).  This makes each label maximally informative without causing a cue conflict between the label and how listeners would have classified the cue without a label.  In our design, labels occurred on many different cue values, many of which listeners would already have classified consistently with the label a priori.  Thus, on average, each label in our design provides substantially less information for the listener than in previous designs.  This may explain the failure to find any effect of labels on adaptation: listeners simply did not gain enough extra information about the underlying distributions from the labels we provided them for it to make a difference in their learning behavior.  This possibility seems the most likely explanation of our results, and calls for further work using the same \emph{kind} of labels, but with shorter exposure where the labels are more informative along the lines of earlier supervised adaptation studies (e.g., \citeNP{Norris2003}).
+
+\section{Conclusion}\label{conclusion}
+
+In two studies, we found that phonetic adaptation was insensitive to label information, even thought those labels changed listeners' classifications. Normative theories that see phonetic adaptation as a sort of statistical inference predict that listeners should use all information available to them in order to more effectively adapt to novel talkers \cite{Kleinschmidt2015}.  While our results appear to violate that prediction, there are some important caveats.  Most importantly, the labels we used may not have provided enough additional information about the underlying distributions, and for the purposes of learning the category distributions may have been redundant with the statistics of the cues themselves.  This suggests a more nuanced understanding of the predictions of normative models of adaptation.  The combination of prior experience with other talkers and sufficient observations from a category might mean that, in many everyday situations, the availability of labels does not contribute enough extra information to change listeners' behavior.  Further modeling and behavioral work is required to investigate the tradeoff between prior experience, number of observations, and informativity of labels in adaptation.  Regardless, it is still important to note that the same labels may be informative about how to classify but relatively uninformative about the overall distribution.
+
+\section{Acknowledgments}
+
+This work was partially funded by an NSF Graduate Research Fellowship to DFK and NIHCD R01 HD075797 as well as an Alfred P. Sloan Fellowship to TFJ. The views expressed here are those of the authors and not necessarily those of the funding agencies.
+
+\begin{table*}[t]
+  \centering
+  
+<<regression-tables, results='asis'>>=
+
+var_name_subs <- list(
+  c(':', ' : '),
+  c('vot_rel.s', 'VOT'),
+  c('bvotCond.s', 'Shift'),
+  c('supervised', 'Supervised'),
+  c('trial.s', 'Trial'))
+
+stargazer(fit, fit2, float=FALSE, single.row=TRUE,
+          covariate.labels = str_replace_multi(names(fixef(fit)), var_name_subs, TRUE),
+          digits = 2, star.cutoffs = c(0.05, 0.01, 0.001),
+          column.labels=c('Experiment 1', 'Experiment 2'), align=TRUE,
+          intercept.bottom=FALSE, model.numbers=FALSE, 
+          dep.var.labels.include=FALSE, dep.var.caption='', 
+          keep.stat = c('n'))
+@ 
+
+
+  \caption{Fixed effect coefficients (and standard errors) for mixed effects regression models of data from Experiments 1 and 2.  All categorical predictors were sum-coded (with range normalized to $1$).  To minimize collinearity between distribution shift and stimulus VOT, stimulus VOT was re-coded relative to the implied category boundary.  This means that the VOT predictor was uncorrelated with the distribution shift predictor.  To improve convergence, the VOT and boundary shift predictors were coded as continuum steps (divided by 10) to put them on roughly the same scale as the other predictors.  Finally, trial number was centered and scaled to a range of 1 (very first trial $=-0.5$, very last trial $=0.5$).}
+  \label{tab:model-fixed-effects-coefs}
+\end{table*}
+
+\bibliographystyle{apacite}
+
+\setlength{\bibleftmargin}{.125in}
+\setlength{\bibindent}{-\bibleftmargin}
+
+\bibliography{/Users/dkleinschmidt/Documents/papers/library-clean}
+
+
+
+\end{document}
