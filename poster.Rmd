@@ -7,9 +7,48 @@ output: html_document
 
 # Supervised and unsupervised learning in phonetic adaptation
 
-Poster presented at Cog Sci 2015. [(PDF)](http://www.davekleinschmidt.com/cogsci_2015/poster.pdf)
-[(Paper PDF)](https://mindmodeling.org/cogsci2015/papers/0200/paper0200.pdf)
+Data analysis and figure generation for poster presented at Cog Sci 2015 by Dave F. Kleinschmidt, Rajeev Raizada, and T. Florian Jaeger.
 
+* [Poster PDF](http://www.davekleinschmidt.com/cogsci_2015/poster.pdf)
+* [RMarkdown source for this handout](http://www.davekleinschmidt.com/cogsci_2015/poster.Rmd)
+* [Paper PDF](https://mindmodeling.org/cogsci2015/papers/0200/paper0200.pdf)
+
+
+# Introduction
+
+* Speech perception is an ongoing _perceptual category learning_ problem.
+    * Need to _adapt_ to each talker's accent
+    * An accent corresponds to a particular set of perceptual categories.
+* Perceptual category learning comes in two flavors: supervised and unsupervised.
+    * Supervised learning: have information that _labels_ each observation with the correct category.
+    * Unsupervised learning: only have observations themselves, need to induce clusters based on observed statistics and prior expectations.
+
+## Background
+
+* Phonetic adaptation has been observed in both forms
+* Supervised:
+    * Recalibration/perceptual learning [Bertelson et al. 2003, Norris et al., 2003, Kraljic & Samuel, 2005]
+    * Ambiguous /b/-/p/ with visual or lexical information that consistently labels it.
+    * If labeled as a /b/, later classify more of a /b/-/p/ continuum as /b/, and vice-versa
+* Unsupervised:
+    * Distributional learning [Clayards et al., 2008]
+    * Hear /b/-/p/ minimal pair words randomly drawn from bimodal distribution on /b/-/p/ continuum.
+    * Classification of continuum changes to reflect clusters in distribution.
+* Real life adaptation is generally a mix, some labeled data and some not.
+
+
+# Methods
+
+* _Distributional learning_ of VOT/voicing categories.
+    * Hear b/p minimal pair words with VOT pseudorandomly drawn from a bimodal distribution
+    * Distribution implies an optimal category boundary that separates lower and higher VOT cluster.
+    * Learning is measured by listeners' classification of these words as /b/ or /p/ version.
+* Labeled and unlabeled trials
+    * Unlabeled trial: both "beach" and "peach" responses are available.  Interpretation of VOT is potentially ambiguous.
+    * Labeled trial: non-minimal pair /b/ and /p/ responses, like "beach" and "peak".  Interpretation of VOT is unambiguous given rest of the word.
+
+# Results
+    
 ```{r preamble, cache=FALSE, warning=FALSE}
 library(knitr)
 knitr::opts_chunk$set(cache=TRUE,
@@ -54,41 +93,6 @@ scale_fill_discrete <- function(...) {
 }
 
 ```
-
-# Introduction
-
-* Speech perception is an ongoing _perceptual category learning_ problem.
-    * Need to _adapt_ to each talker's accent
-    * An accent corresponds to a particular set of perceptual categories.
-* Perceptual category learning comes in two flavors: supervised and unsupervised.
-    * Supervised learning: have information that _labels_ each observation with the correct category.
-    * Unsupervised learning: only have observations themselves, need to induce clusters based on observed statistics and prior expectations.
-
-## Background
-
-* Phonetic adaptation has been observed in both forms
-* Supervised:
-    * Recalibration/perceptual learning [Bertelson et al. 2003, Norris et al., 2003, Kraljic & Samuel, 2005]
-    * Ambiguous /b/-/p/ with visual or lexical information that consistently labels it.
-    * If labeled as a /b/, later classify more of a /b/-/p/ continuum as /b/, and vice-versa
-* Unsupervised:
-    * Distributional learning [Clayards et al., 2008]
-    * Hear /b/-/p/ minimal pair words randomly drawn from bimodal distribution on /b/-/p/ continuum.
-    * Classification of continuum changes to reflect clusters in distribution.
-* Real life adaptation is generally a mix, some labeled data and some not.
-
-
-# Methods
-
-* _Distributional learning_ of VOT/voicing categories.
-    * Hear b/p minimal pair words with VOT pseudorandomly drawn from a bimodal distribution
-    * Distribution implies an optimal category boundary that separates lower and higher VOT cluster.
-    * Learning is measured by listeners' classification of these words as /b/ or /p/ version.
-* Labeled and unlabeled trials
-    * Unlabeled trial: both "beach" and "peach" responses are available.  Interpretation of VOT is potentially ambiguous.
-    * Labeled trial: non-minimal pair /b/ and /p/ responses, like "beach" and "peak".  Interpretation of VOT is unambiguous given rest of the word.
-
-# Results
 
 Load data and pick out the relevant subset
 
@@ -300,7 +304,7 @@ Norris, D., McQueen, J. M., & Cutler, A. (2003). Perceptual learning in speech. 
 
 # Appendix
 
-## Methods
+## Methods and subjects
 
 ```{r}
 
@@ -314,4 +318,30 @@ n_subj_by_cond <- dat %>%
 
 Analyzed data from `r n_subj` subjects recruited on Mechanical Turk.  Each subject was randomly assigned to a supervision condition (unsupervised, supervised, or mixed) and a distribution condition (0ms and 10ms).  There were an average of `r round(mean(n_subj_by_cond$n))` per cell (`r min(n_subj_by_cond$n)` to `r max(n_subj_by_cond$n)`).  Each subject got 222 trials drawn from the appropriate distribution, with three minimal pairs (beach/peach, bees/peas, beak/peak).
 
+## Regression analysis
+
 Fit a logistic GLMM with fixed effects of trial, VOT, condition (unsupervised, supervised, or mixed), and distribution (0ms or 10ms shift), and the maximal random effects structure (random intercepts and slopes for trial and VOT by subject).  Predictors were appropriately centered and scaled or sum-coded before fitting.  Estimated category boundaries from the fixed effects coefficients, and for visualization computed their standard errors based on the fixed effects variance-covariance matrix (not taking into account random effects).
+
+```{r model-output, results='asis'}
+
+library(stargazer)
+
+var_name_subs <- list(
+  c(':', ' : '),
+  c('vot_rel.s', 'VOT'),
+  c('bvotCond.s', 'Shift'),
+  c('supCond', 'unsup-vs-'),
+  c('trial.s', 'Trial'))
+
+stargazer(mod, float=FALSE, single.row=TRUE,
+          covariate.labels = str_replace_multi(names(fixef(mod)),
+                                               var_name_subs, TRUE),
+          digits = 2, star.cutoffs = c(0.05, 0.01, 0.001),
+          align=TRUE,
+          intercept.bottom=FALSE, model.numbers=FALSE, 
+          dep.var.labels.include=FALSE, dep.var.caption='', 
+          keep.stat = c('n'), type='html')
+
+
+```
+
