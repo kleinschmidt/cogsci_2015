@@ -10,9 +10,15 @@ output: html_document
 Data analysis and figure generation for poster presented at Cog Sci 2015 by Dave F. Kleinschmidt, Rajeev Raizada, and T. Florian Jaeger.
 
 * [Poster PDF](http://www.davekleinschmidt.com/cogsci_2015/poster.pdf)
-* [RMarkdown source for this handout](http://www.davekleinschmidt.com/cogsci_2015/poster.Rmd)
+* [RMarkdown source for this handout](http://www.davekleinschmidt.com/cogsci_2015/poster.Rmd).
 * [Paper PDF](https://mindmodeling.org/cogsci2015/papers/0200/paper0200.pdf)
 
+This handout was generated with [knitr](http://yihui.name/knitr/).  To compile it yourself, download the [source file](http://www.davekleinschmidt.com/cogsci_2015/poster.Rmd) and run:
+
+```{r, eval=FALSE}
+library(knitr)
+knitr::rocco('poster.Rmd')
+```
 
 # Introduction
 
